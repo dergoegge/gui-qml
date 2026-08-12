@@ -34,6 +34,7 @@
 #include <QVariant>
 
 #include <algorithm>
+#include <utility>
 
 namespace {
 QByteArray okResponse()
