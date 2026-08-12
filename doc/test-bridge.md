@@ -363,6 +363,13 @@ and does **not** launch or terminate the application.
 | `qml_test_bridge_state.py` | Coordinate-driven commands: get_state, click by point, press_key, scroll, drag, settle |
 | `qml_test_onboarding.py` | Walks through the full onboarding flow (Cover → Strengthen → Blockclock → StorageLocation → StorageAmount → Connection) |
 
+### Autonomous exploration
+
+The coordinate-driven commands exist so that a property-based driver can
+explore the UI on its own rather than following a scripted flow.
+[`test/antithesis/`](../test/antithesis/README.md) contains a harness that does
+this with Bombadil, both locally in Docker and inside Antithesis.
+
 ## Prerequisite: `objectName` annotations
 
 The test bridge locates QML elements by their `objectName` property. Every

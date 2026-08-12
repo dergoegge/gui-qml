@@ -1,0 +1,18 @@
+# Antithesis environment for exploring the QML GUI.
+#
+# One container holds both the application and Bombadil: they talk over a Unix
+# domain socket, so they have to share a filesystem. Bombadil starts the
+# application when the test command runs, rather than the container starting it,
+# so that each exploration run gets a fresh regtest datadir.
+services:
+  gui:
+    container_name: gui
+    image: gui-qml-sut:latest
+    hostname: gui
+    # No published ports: the node runs regtest with networking disabled, and
+    # the bridge socket never leaves the container.
+    environment:
+      QT_QPA_PLATFORM: offscreen
+      QT_QUICK_BACKEND: software
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      BOMBADIL_TIME_LIMIT: 10m

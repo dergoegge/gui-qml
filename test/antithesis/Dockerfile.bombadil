@@ -1,0 +1,28 @@
+# Builds the Bombadil CLI with only the QML driver enabled.
+#
+# The build context is a Bombadil checkout:
+#   docker build -f test/antithesis/Dockerfile.bombadil -t bombadil-qml /path/to/bombadil
+#
+# Only the `qml` feature is enabled: the terminal driver needs a Zig toolchain
+# to build libghostty, which this image has no use for.
+
+FROM docker.io/library/rust:1-bookworm AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        pkg-config libssl-dev ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# bombadil-cli embeds the Inspect frontend, whose build script shells out to
+# trunk, so it has to be present even when Inspect is not used.
+RUN rustup target add wasm32-unknown-unknown \
+    && cargo install --locked trunk
+
+WORKDIR /src
+COPY . .
+
+RUN cargo build --release --locked \
+        -p bombadil-cli \
+        --no-default-features --features qml
+
+FROM scratch AS export
+COPY --from=builder /src/target/release/bombadil /out/bombadil
