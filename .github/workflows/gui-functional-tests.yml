@@ -144,6 +144,7 @@ jobs:
           export BITCOIN_QT_COMPAT="${GITHUB_WORKSPACE}/releases/v${QT_COMPAT_VERSION}/bin/bitcoin-qt"
           export BITCOIN_QT_RUNNER="xvfb-run -a"
           python3 test/functional/qml_test_bridge_sanity.py
+          python3 test/functional/qml_test_bridge_state.py
           python3 test/functional/qml_test_onboarding.py
           python3 test/functional/qml_test_preinit_onboarding.py
           python3 test/functional/qml_test_disablewallet_boot.py

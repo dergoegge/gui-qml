@@ -178,6 +178,98 @@ Useful for debugging and discovering available targets.
    ]}
 ```
 
+### Coordinate-driven commands
+
+The commands above address a control by `objectName`, which suits a test that
+knows what it is looking for. A property-based driver instead needs to discover
+what is on screen and act on it, so the following commands work in window
+coordinates and report the whole tree at once.
+
+#### `get_state`
+
+Returns everything observable in one round trip: the item tree, window
+geometry, the focused item, the current page, and any diagnostic messages
+newer than `sinceSeq`.
+
+```json
+→ {"cmd": "get_state", "sinceSeq": 41, "maxNodes": 4000, "props": true, "ignore": ["blockClock"]}
+← {"tree": {"type": "Application", "visible": true, "enabled": true, "children": [
+     {"type": "MainWindow", "objectName": "mainWindow", "rect": [0, 0, 800, 600],
+      "visible": true, "enabled": true, "children": [
+        {"type": "ContinueButton", "objectName": "continueButton",
+         "rect": [120, 300, 240, 48], "visible": true, "enabled": true,
+         "clickable": true, "props": {"text": "Continue"}}
+      ]}
+   ]},
+   "nodeCount": 812,
+   "currentPage": "WalletShell",
+   "window": {"width": 800, "height": 600, "visible": true, "title": "Bitcoin Core App"},
+   "focus": {"type": "TextField", "objectName": "walletNameField"},
+   "diagnostics": {"seq": 42, "dropped": 0, "entries": [
+     {"seq": 42, "level": "warning", "text": "TypeError: ...", "file": "...", "line": 17}
+   ]}}
+```
+
+Node fields: `type` (QML type with the engine's `_QMLTYPE_<n>` suffix
+stripped), `objectName`, `rect` as `[x, y, width, height]` in window
+coordinates, `visible`, `enabled`, and — only when true — `focus`, `clickable`
+and `editable`. `props` carries the properties the QML file declares plus a
+small well-known set (`text`, `checked`, `currentIndex`, …).
+
+Invisible nodes are reported without their children, since nothing under them
+can be interacted with. `ignore` drops named subtrees entirely, and
+`maxNodes` bounds the response, setting `"truncated": true` when it applies.
+
+`diagnostics` covers every Qt and QML message the process has emitted,
+including binding and type errors from the QML engine. Recording starts before
+any QML loads, so startup errors are included. Pass the `seq` from a previous
+response as `sinceSeq` to attribute new messages to the action in between.
+
+#### `click` by point
+
+Passing a `point` instead of an `objectName` clicks a window coordinate and
+reports the item that was hit.
+
+```json
+→ {"cmd": "click", "point": {"x": 240, "y": 324}, "button": "left"}
+← {"ok": true, "hit": {"type": "ContinueButton", "objectName": "continueButton"}}
+```
+
+Points outside the window are rejected rather than silently ignored.
+
+#### `press_key`, `scroll`, `drag`
+
+Raw input delivered to the window, for driving controls without naming them.
+`press_key` takes a `Qt::Key` code and goes to the focused item; `scroll`
+sends a wheel event; `drag` presses, moves in `steps` increments, and
+releases, which is what a `Flickable` needs to actually flick.
+
+```json
+→ {"cmd": "press_key", "key": 16777220, "modifiers": 0, "text": "\r", "count": 1}
+→ {"cmd": "scroll", "point": {"x": 400, "y": 300}, "dx": 0, "dy": -120}
+→ {"cmd": "drag", "from": {"x": 400, "y": 500}, "to": {"x": 400, "y": 200}, "steps": 10, "delayMs": 8}
+← {"ok": true}
+```
+
+`type_text` also accepts a missing or empty `objectName`, in which case it
+types into whatever item currently has focus.
+
+#### `settle`
+
+Waits until the item tree stops changing, which is what a driver needs between
+one action and reading the next state. The bridge compares successive tree
+signatures rather than polling named `StackView`s, so it does not need to know
+which transitions are in play.
+
+```json
+→ {"cmd": "settle", "timeoutMs": 2000, "stableMs": 150, "ignore": ["blockClock"]}
+← {"ok": true, "stable": true, "elapsedMs": 320, "revisions": 4}
+```
+
+`stable` is `false` when the timeout expired with the tree still changing.
+Continuously animating parts of the UI never settle, so pass their
+`objectName`s in `ignore` — the same list `get_state` takes.
+
 ### Error responses
 
 All commands may return an error response instead of their normal result:
@@ -205,6 +297,22 @@ visible = gui.get_property("importButton", "visible")
 objects = gui.list_objects()
 
 gui.close()
+```
+
+For coordinate-driven exploration the module also provides tree helpers:
+
+```python
+from qml_driver import QmlDriver, actionable_nodes, find_node, node_center
+
+gui = QmlDriver("/tmp/test_bridge.sock")
+
+state = gui.get_state()
+for node in actionable_nodes(state):
+    print(node["type"], node.get("objectName"), node["rect"])
+
+target = find_node(state["tree"], "continueButton")
+gui.click_point(*node_center(target))
+gui.settle_tree(timeout_ms=5000, ignore=["blockClock"])
 ```
 
 The driver retries the initial connection for up to 30 seconds (configurable
@@ -252,6 +360,7 @@ and does **not** launch or terminate the application.
 | Script | Description |
 |---|---|
 | `qml_test_bridge_sanity.py` | Bridge protocol smoke test: list_objects, get_current_page, get_property, error handling, wait_for_page timeout |
+| `qml_test_bridge_state.py` | Coordinate-driven commands: get_state, click by point, press_key, scroll, drag, settle |
 | `qml_test_onboarding.py` | Walks through the full onboarding flow (Cover → Strengthen → Blockclock → StorageLocation → StorageAmount → Connection) |
 
 ## Prerequisite: `objectName` annotations
@@ -314,6 +423,8 @@ their buttons:
 |---|---|
 | `qml/test/testbridge.h` | `TestBridge` class declaration |
 | `qml/test/testbridge.cpp` | `TestBridge` implementation |
+| `qml/test/testtree.h/.cpp` | Item tree serialization, tree signatures, hit testing |
+| `qml/test/testdiagnostics.h/.cpp` | Sequence-numbered Qt/QML message buffer |
 | `qml/bitcoin.cpp` | Integration point (`-test-automation` arg, bridge init) |
 | `CMakeLists.txt` | `ENABLE_TEST_AUTOMATION` option and conditional compilation |
 | `test/functional/qml_driver.py` | Python `QmlDriver` client |

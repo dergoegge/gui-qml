@@ -66,6 +66,7 @@
 #include <qml/walletqmlcontroller.h>
 #ifdef ENABLE_TEST_AUTOMATION
 #include <qml/test/testbridge.h>
+#include <qml/test/testdiagnostics.h>
 #endif
 #include <util/fs.h>
 #include <util/fs_helpers.h>
@@ -190,6 +191,11 @@ void RecordStartupWarning(QStringList& startup_warnings, const bilingual_str& me
 /* qDebug() message handler --> debug.log */
 void DebugMessageHandler(QtMsgType type, const QMessageLogContext& context, const QString& msg)
 {
+#ifdef ENABLE_TEST_AUTOMATION
+    // QML binding and type errors surface here. Recording them lets a test
+    // driver assert that exploring the UI never provokes one.
+    TestDiagnostics::Record(type, context, msg);
+#endif
     Q_UNUSED(context);
     if (type == QtDebugMsg || (type == QtWarningMsg && IsBenignQtFontWarning(msg))) {
         LogDebug(BCLog::QT, "GUI: %s\n", msg.toStdString());
@@ -400,6 +406,13 @@ int QmlGuiMain(int argc, char* argv[])
     Q_INIT_RESOURCE(bitcoin_qml);
     Q_INIT_RESOURCE(bitcoin_compat);
     qRegisterMetaType<interfaces::BlockAndHeaderTipInfo>("interfaces::BlockAndHeaderTipInfo");
+
+#ifdef ENABLE_TEST_AUTOMATION
+    // Start recording before any QML is loaded. DebugMessageHandler, which
+    // also records, is only installed once logging is up, by which point the
+    // main window has already been created.
+    TestDiagnostics::InstallRecorder();
+#endif
 
     QGuiApplication::styleHints()->setTabFocusBehavior(Qt::TabFocusAllControls);
     QApplication app(argc, argv);

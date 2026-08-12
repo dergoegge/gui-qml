@@ -4,7 +4,11 @@
 
 #include <qml/test/testbridge.h>
 
+#include <qml/test/testdiagnostics.h>
+#include <qml/test/testtree.h>
+
 #include <QClipboard>
+#include <QElapsedTimer>
 #include <QCoreApplication>
 #include <QGuiApplication>
 #include <QJsonArray>
@@ -20,6 +24,8 @@
 #include <QPointer>
 #include <QQuickItem>
 #include <QQuickWindow>
+#include <QRectF>
+#include <QWheelEvent>
 #include <QCloseEvent>
 #include <QQmlContext>
 #include <QScopedValueRollback>
@@ -471,7 +477,20 @@ QByteArray TestBridge::processCommand(const QByteArray& json_cmd)
             obj.value(QStringLiteral("method")).toString(),
             obj.value(QStringLiteral("args")).toArray());
     } else if (cmd == QLatin1String("click")) {
+        // A point takes precedence: coordinate-driven callers do not know an
+        // objectName for every target they can see.
+        if (obj.contains(QStringLiteral("point"))) return cmdClickPoint(obj);
         return cmdClick(obj.value(QStringLiteral("objectName")).toString());
+    } else if (cmd == QLatin1String("get_state")) {
+        return cmdGetState(obj);
+    } else if (cmd == QLatin1String("press_key")) {
+        return cmdPressKey(obj);
+    } else if (cmd == QLatin1String("scroll")) {
+        return cmdScroll(obj);
+    } else if (cmd == QLatin1String("drag")) {
+        return cmdDrag(obj);
+    } else if (cmd == QLatin1String("settle")) {
+        return cmdSettle(obj);
     } else if (cmd == QLatin1String("set_text")) {
         return cmdSetText(
             obj.value(QStringLiteral("objectName")).toString(),
@@ -525,16 +544,11 @@ QByteArray TestBridge::processCommand(const QByteArray& json_cmd)
     return errorResponse(QStringLiteral("Unknown command: %1").arg(cmd));
 }
 
-QByteArray TestBridge::cmdGetCurrentPage()
+QString TestBridge::currentPageName() const
 {
-    auto pageResponse = [](QObject* page_obj) {
-        QString name = page_obj->objectName();
-        if (name.isEmpty()) {
-            name = QString::fromLatin1(page_obj->metaObject()->className());
-        }
-        QJsonObject resp;
-        resp[QStringLiteral("page")] = name;
-        return QJsonDocument(resp).toJson(QJsonDocument::Compact);
+    auto pageName = [](QObject* page_obj) {
+        const QString name = page_obj->objectName();
+        return name.isEmpty() ? TestTree::TypeName(page_obj) : name;
     };
 
     // Preferred path: resolve from the named main PageStack in the main window.
@@ -544,7 +558,7 @@ QByteArray TestBridge::cmdGetCurrentPage()
 
         QObject* page_obj = resolveCurrentLeafItem(main_stack->property("currentItem").value<QObject*>());
         if (page_obj) {
-            return pageResponse(page_obj);
+            return pageName(page_obj);
         }
     }
 
@@ -556,11 +570,23 @@ QByteArray TestBridge::cmdGetCurrentPage()
 
         QObject* current_obj = resolveCurrentLeafItem(current.value<QObject*>());
         if (current_obj) {
-            return pageResponse(current_obj);
+            return pageName(current_obj);
         }
     }
 
-    return errorResponse(QStringLiteral("Could not determine current page; missing mainPageStack/current page item"));
+    return QString{};
+}
+
+QByteArray TestBridge::cmdGetCurrentPage()
+{
+    const QString page = currentPageName();
+    if (page.isEmpty()) {
+        return errorResponse(QStringLiteral("Could not determine current page; missing mainPageStack/current page item"));
+    }
+
+    QJsonObject resp;
+    resp[QStringLiteral("page")] = page;
+    return QJsonDocument(resp).toJson(QJsonDocument::Compact);
 }
 
 QByteArray TestBridge::cmdGetContextProperty(const QString& name)
@@ -837,32 +863,38 @@ QByteArray TestBridge::cmdSetText(const QString& object_name, const QString& tex
 
 QByteArray TestBridge::cmdTypeText(const QString& object_name, const QString& text)
 {
+    QQuickItem* item{nullptr};
     if (object_name.isEmpty()) {
-        return errorResponse(QStringLiteral("objectName is required"));
+        // Coordinate-driven callers type into whatever a preceding click
+        // focused, rather than naming a field.
+        QQuickWindow* window = mainWindow();
+        item = window ? window->activeFocusItem() : nullptr;
+        if (!item) {
+            return errorResponse(QStringLiteral("No focused item to type into"));
+        }
+    } else {
+        QObject* obj = findObjectByName(object_name);
+        if (!obj) {
+            return errorResponse(QStringLiteral("Object not found: %1").arg(object_name));
+        }
+        item = qobject_cast<QQuickItem*>(obj);
+        if (!item) {
+            return errorResponse(QStringLiteral("Object %1 is not a QQuickItem").arg(object_name));
+        }
+        item->forceActiveFocus(Qt::OtherFocusReason);
+        QCoreApplication::processEvents();
     }
-
-    QObject* obj = findObjectByName(object_name);
-    if (!obj) {
-        return errorResponse(QStringLiteral("Object not found: %1").arg(object_name));
-    }
-
-    auto* item = qobject_cast<QQuickItem*>(obj);
-    if (!item) {
-        return errorResponse(QStringLiteral("Object %1 is not a QQuickItem").arg(object_name));
-    }
-
-    item->forceActiveFocus(Qt::OtherFocusReason);
-    QCoreApplication::processEvents();
 
     for (const QChar ch : text) {
+        // Text editors insert the event's text regardless of key code, so an
+        // unmapped character is still typed, just without a matching Qt::Key.
         const std::optional<KeyStroke> stroke = ToKeyStroke(ch);
-        if (!stroke) {
-            return errorResponse(QStringLiteral("Unsupported character for type_text: %1").arg(ch));
-        }
+        const int key = stroke ? stroke->key : Qt::Key_unknown;
+        const Qt::KeyboardModifiers modifiers = stroke ? stroke->modifiers : Qt::NoModifier;
 
         const QString key_text{ch};
-        QKeyEvent press(QEvent::KeyPress, stroke->key, stroke->modifiers, key_text);
-        QKeyEvent release(QEvent::KeyRelease, stroke->key, stroke->modifiers, key_text);
+        QKeyEvent press(QEvent::KeyPress, key, modifiers, key_text);
+        QKeyEvent release(QEvent::KeyRelease, key, modifiers, key_text);
         QCoreApplication::sendEvent(item, &press);
         QCoreApplication::sendEvent(item, &release);
     }
@@ -1235,6 +1267,263 @@ QByteArray TestBridge::cmdSetClipboardText(const QString& text)
     QGuiApplication::clipboard()->setText(text);
     QJsonObject resp;
     resp[QStringLiteral("ok")] = true;
+    return QJsonDocument(resp).toJson(QJsonDocument::Compact);
+}
+
+namespace {
+//! How often a settle loop re-reads the tree while waiting for it to stop changing.
+constexpr int SETTLE_POLL_INTERVAL_MS{10};
+//! Angle delta per pixel of requested scrolling, matching the ratio Qt uses
+//! for a physical wheel (15 degrees, or 120 eighths, per notch).
+constexpr int WHEEL_ANGLE_PER_PIXEL{8};
+
+QPointF PointFromJson(const QJsonObject& point)
+{
+    return QPointF(point.value(QStringLiteral("x")).toDouble(),
+                   point.value(QStringLiteral("y")).toDouble());
+}
+
+Qt::MouseButton ButtonFromJson(const QString& button)
+{
+    if (button == QLatin1String("right")) return Qt::RightButton;
+    if (button == QLatin1String("middle")) return Qt::MiddleButton;
+    return Qt::LeftButton;
+}
+
+TestTree::Options TreeOptionsFromJson(const QJsonObject& request)
+{
+    TestTree::Options options;
+    if (const QJsonValue max_nodes = request.value(QStringLiteral("maxNodes")); max_nodes.isDouble()) {
+        options.max_nodes = max_nodes.toInt();
+    }
+    if (const QJsonValue props = request.value(QStringLiteral("props")); props.isBool()) {
+        options.include_props = props.toBool();
+    }
+    for (const QJsonValue& ignored : request.value(QStringLiteral("ignore")).toArray()) {
+        const QString object_name = ignored.toString();
+        if (!object_name.isEmpty()) options.ignore_object_names.insert(object_name);
+    }
+    return options;
+}
+
+/// Let queued events, timers and animations run for @p milliseconds.
+void RunEventLoopFor(int milliseconds)
+{
+    QEventLoop loop;
+    QTimer::singleShot(milliseconds, &loop, &QEventLoop::quit);
+    loop.exec();
+}
+
+QJsonObject DescribeObject(QObject* object)
+{
+    QJsonObject description;
+    description[QStringLiteral("type")] = TestTree::TypeName(object);
+    if (!object->objectName().isEmpty()) {
+        description[QStringLiteral("objectName")] = object->objectName();
+    }
+    return description;
+}
+} // namespace
+
+QQuickWindow* TestBridge::mainWindow() const
+{
+    for (QObject* root : m_engine->rootObjects()) {
+        if (auto* window = qobject_cast<QQuickWindow*>(root)) return window;
+    }
+    return nullptr;
+}
+
+QByteArray TestBridge::cmdGetState(const QJsonObject& request)
+{
+    int node_count{0};
+    bool truncated{false};
+    const TestTree::Options options = TreeOptionsFromJson(request);
+
+    QJsonObject resp;
+    resp[QStringLiteral("tree")] = TestTree::Serialize(m_engine, options, &node_count, &truncated);
+    resp[QStringLiteral("nodeCount")] = node_count;
+    if (truncated) resp[QStringLiteral("truncated")] = true;
+
+    const QString page = currentPageName();
+    if (!page.isEmpty()) resp[QStringLiteral("currentPage")] = page;
+
+    if (QQuickWindow* window = mainWindow()) {
+        QJsonObject window_json;
+        window_json[QStringLiteral("width")] = window->width();
+        window_json[QStringLiteral("height")] = window->height();
+        window_json[QStringLiteral("visible")] = window->isVisible();
+        window_json[QStringLiteral("title")] = window->title();
+        resp[QStringLiteral("window")] = window_json;
+
+        if (QQuickItem* focus_item = window->activeFocusItem()) {
+            resp[QStringLiteral("focus")] = DescribeObject(focus_item);
+        }
+    }
+
+    const quint64 since_seq = static_cast<quint64>(request.value(QStringLiteral("sinceSeq")).toDouble(0));
+    resp[QStringLiteral("diagnostics")] = TestDiagnostics::ToJson(since_seq);
+
+    return QJsonDocument(resp).toJson(QJsonDocument::Compact);
+}
+
+QByteArray TestBridge::cmdClickPoint(const QJsonObject& request)
+{
+    QQuickWindow* window = mainWindow();
+    if (!window) {
+        return errorResponse(QStringLiteral("No QQuickWindow root object found"));
+    }
+
+    const QPointF point = PointFromJson(request.value(QStringLiteral("point")).toObject());
+    if (!QRectF(0, 0, window->width(), window->height()).contains(point)) {
+        return errorResponse(QStringLiteral("Point (%1, %2) is outside the window")
+                                 .arg(point.x())
+                                 .arg(point.y()));
+    }
+
+    // Resolve the target before clicking: the click may destroy it.
+    QObject* hit = TestTree::HitTest(m_engine, point);
+    const Qt::MouseButton button = ButtonFromJson(request.value(QStringLiteral("button")).toString());
+    const QPoint pos = point.toPoint();
+
+    QMouseEvent press(QEvent::MouseButtonPress, pos, window->mapToGlobal(pos),
+                      button, button, Qt::NoModifier);
+    QMouseEvent release(QEvent::MouseButtonRelease, pos, window->mapToGlobal(pos),
+                        button, Qt::NoButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(window, &press);
+    QCoreApplication::sendEvent(window, &release);
+    QCoreApplication::processEvents();
+
+    QJsonObject resp;
+    resp[QStringLiteral("ok")] = true;
+    if (hit) resp[QStringLiteral("hit")] = DescribeObject(hit);
+    return QJsonDocument(resp).toJson(QJsonDocument::Compact);
+}
+
+QByteArray TestBridge::cmdPressKey(const QJsonObject& request)
+{
+    QQuickWindow* window = mainWindow();
+    if (!window) {
+        return errorResponse(QStringLiteral("No QQuickWindow root object found"));
+    }
+
+    const int key = request.value(QStringLiteral("key")).toInt();
+    if (key == 0) {
+        return errorResponse(QStringLiteral("key is required"));
+    }
+
+    const auto modifiers = Qt::KeyboardModifiers::fromInt(
+        request.value(QStringLiteral("modifiers")).toInt(0));
+    const QString text = request.value(QStringLiteral("text")).toString();
+    const int count = qBound(1, request.value(QStringLiteral("count")).toInt(1), 64);
+
+    for (int i = 0; i < count; ++i) {
+        QKeyEvent press(QEvent::KeyPress, key, modifiers, text);
+        QKeyEvent release(QEvent::KeyRelease, key, modifiers, text);
+        QCoreApplication::sendEvent(window, &press);
+        QCoreApplication::sendEvent(window, &release);
+    }
+    QCoreApplication::processEvents();
+
+    QJsonObject resp;
+    resp[QStringLiteral("ok")] = true;
+    return QJsonDocument(resp).toJson(QJsonDocument::Compact);
+}
+
+QByteArray TestBridge::cmdScroll(const QJsonObject& request)
+{
+    QQuickWindow* window = mainWindow();
+    if (!window) {
+        return errorResponse(QStringLiteral("No QQuickWindow root object found"));
+    }
+
+    const QPointF point = PointFromJson(request.value(QStringLiteral("point")).toObject());
+    const int dx = request.value(QStringLiteral("dx")).toInt(0);
+    const int dy = request.value(QStringLiteral("dy")).toInt(0);
+    if (dx == 0 && dy == 0) {
+        return errorResponse(QStringLiteral("dx or dy is required"));
+    }
+
+    const QPoint pixel_delta(dx, dy);
+    const QPoint angle_delta(dx * WHEEL_ANGLE_PER_PIXEL, dy * WHEEL_ANGLE_PER_PIXEL);
+    QWheelEvent wheel(point, window->mapToGlobal(point.toPoint()), pixel_delta, angle_delta,
+                      Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+    QCoreApplication::sendEvent(window, &wheel);
+    QCoreApplication::processEvents();
+
+    QJsonObject resp;
+    resp[QStringLiteral("ok")] = true;
+    return QJsonDocument(resp).toJson(QJsonDocument::Compact);
+}
+
+QByteArray TestBridge::cmdDrag(const QJsonObject& request)
+{
+    QQuickWindow* window = mainWindow();
+    if (!window) {
+        return errorResponse(QStringLiteral("No QQuickWindow root object found"));
+    }
+
+    const QPointF from = PointFromJson(request.value(QStringLiteral("from")).toObject());
+    const QPointF to = PointFromJson(request.value(QStringLiteral("to")).toObject());
+    const int steps = qBound(1, request.value(QStringLiteral("steps")).toInt(10), 200);
+    const int delay_ms = qBound(0, request.value(QStringLiteral("delayMs")).toInt(0), 100);
+
+    auto sendMouse = [&](QEvent::Type type, const QPointF& at, Qt::MouseButton button, Qt::MouseButtons buttons) {
+        const QPoint pos = at.toPoint();
+        QMouseEvent event(type, pos, window->mapToGlobal(pos), button, buttons, Qt::NoModifier);
+        QCoreApplication::sendEvent(window, &event);
+        QCoreApplication::processEvents();
+    };
+
+    sendMouse(QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
+    for (int step = 1; step <= steps; ++step) {
+        const double fraction = static_cast<double>(step) / steps;
+        const QPointF at = from + (to - from) * fraction;
+        sendMouse(QEvent::MouseMove, at, Qt::NoButton, Qt::LeftButton);
+        if (delay_ms > 0) RunEventLoopFor(delay_ms);
+    }
+    sendMouse(QEvent::MouseButtonRelease, to, Qt::LeftButton, Qt::NoButton);
+
+    QJsonObject resp;
+    resp[QStringLiteral("ok")] = true;
+    return QJsonDocument(resp).toJson(QJsonDocument::Compact);
+}
+
+QByteArray TestBridge::cmdSettle(const QJsonObject& request)
+{
+    const int timeout_ms = qBound(0, request.value(QStringLiteral("timeoutMs")).toInt(2000), 120000);
+    const int stable_ms = qBound(0, request.value(QStringLiteral("stableMs")).toInt(150), timeout_ms);
+    const TestTree::Options options = TreeOptionsFromJson(request);
+
+    QElapsedTimer total;
+    total.start();
+    QElapsedTimer unchanged;
+    unchanged.start();
+    QByteArray signature = TestTree::Signature(m_engine, options);
+    int revisions{0};
+    bool stable{false};
+
+    while (true) {
+        if (unchanged.elapsed() >= stable_ms) {
+            stable = true;
+            break;
+        }
+        if (total.elapsed() >= timeout_ms) break;
+
+        RunEventLoopFor(SETTLE_POLL_INTERVAL_MS);
+
+        QByteArray next = TestTree::Signature(m_engine, options);
+        if (next != signature) {
+            signature = std::move(next);
+            unchanged.restart();
+            ++revisions;
+        }
+    }
+
+    QJsonObject resp;
+    resp[QStringLiteral("ok")] = true;
+    resp[QStringLiteral("stable")] = stable;
+    resp[QStringLiteral("elapsedMs")] = static_cast<double>(total.elapsed());
+    resp[QStringLiteral("revisions")] = revisions;
     return QJsonDocument(resp).toJson(QJsonDocument::Compact);
 }
 

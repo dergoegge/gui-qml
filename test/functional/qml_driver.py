@@ -256,6 +256,89 @@ class QmlDriver:
             raise QmlDriverError(f"list_objects failed: {resp['error']}")
         return resp["objects"]
 
+    # ── Coordinate-driven exploration ────────────────────────────────
+
+    def get_state(self, since_seq=0, max_nodes=None, props=True, ignore=None):
+        """Return the full UI state: item tree, window, focus, diagnostics.
+
+        One round trip, so callers that need to inspect everything on screen
+        (rather than a known objectName) do not have to issue a request per
+        object. `since_seq` filters diagnostics to messages newer than a
+        previously observed sequence number.
+        """
+        cmd = {"cmd": "get_state", "sinceSeq": since_seq, "props": props}
+        if max_nodes is not None:
+            cmd["maxNodes"] = max_nodes
+        if ignore:
+            cmd["ignore"] = list(ignore)
+        resp = self._send(cmd)
+        if "error" in resp:
+            raise QmlDriverError(f"get_state failed: {resp['error']}")
+        return resp
+
+    def click_point(self, x, y, button="left"):
+        """Click at a window coordinate, returning the item that was hit."""
+        resp = self._send(
+            {"cmd": "click", "point": {"x": x, "y": y}, "button": button}
+        )
+        if "error" in resp:
+            raise QmlDriverError(f"click_point({x}, {y}) failed: {resp['error']}")
+        return resp.get("hit")
+
+    def press_key(self, key, modifiers=0, text="", count=1):
+        """Send a key press/release to the focused item."""
+        resp = self._send(
+            {
+                "cmd": "press_key",
+                "key": key,
+                "modifiers": modifiers,
+                "text": text,
+                "count": count,
+            }
+        )
+        if "error" in resp:
+            raise QmlDriverError(f"press_key({key}) failed: {resp['error']}")
+
+    def scroll(self, x, y, dx=0, dy=0):
+        """Send a wheel event at a window coordinate."""
+        resp = self._send(
+            {"cmd": "scroll", "point": {"x": x, "y": y}, "dx": dx, "dy": dy}
+        )
+        if "error" in resp:
+            raise QmlDriverError(f"scroll({x}, {y}) failed: {resp['error']}")
+
+    def drag(self, from_xy, to_xy, steps=10, delay_ms=0):
+        """Press, move in `steps` increments, and release; drives Flickables."""
+        resp = self._send(
+            {
+                "cmd": "drag",
+                "from": {"x": from_xy[0], "y": from_xy[1]},
+                "to": {"x": to_xy[0], "y": to_xy[1]},
+                "steps": steps,
+                "delayMs": delay_ms,
+            }
+        )
+        if "error" in resp:
+            raise QmlDriverError(f"drag({from_xy}, {to_xy}) failed: {resp['error']}")
+
+    def settle_tree(self, timeout_ms=2000, stable_ms=150, ignore=None):
+        """Wait until the item tree stops changing.
+
+        Unlike settle(), this does not depend on knowing which StackViews are
+        in play: the bridge compares successive tree signatures. Continuously
+        animating parts of the UI never stop changing, so pass their
+        objectNames in `ignore`.
+
+        Returns the response dict, whose "stable" field is False on timeout.
+        """
+        cmd = {"cmd": "settle", "timeoutMs": timeout_ms, "stableMs": stable_ms}
+        if ignore:
+            cmd["ignore"] = list(ignore)
+        resp = self._send(cmd)
+        if "error" in resp:
+            raise QmlDriverError(f"settle failed: {resp['error']}")
+        return resp
+
     def get_context_property(self, name):
         """Return metadata for a QQmlEngine root context property."""
         resp = self._send({"cmd": "get_context_property", "name": name})
@@ -385,3 +468,54 @@ class QmlDriver:
             if b"\n" in buf:
                 line, _ = buf.split(b"\n", 1)
                 return json.loads(line)
+
+
+# ── Helpers for get_state() trees ────────────────────────────────────
+
+
+def walk_tree(node):
+    """Yield every node of a get_state() tree, depth first."""
+    yield node
+    for child in node.get("children", ()):
+        yield from walk_tree(child)
+
+
+def find_node(tree, object_name):
+    """Return the first node with the given objectName, or None."""
+    for node in walk_tree(tree):
+        if node.get("objectName") == object_name:
+            return node
+    return None
+
+
+def node_center(node):
+    """Center of a node's rect, as an (x, y) tuple."""
+    x, y, width, height = node["rect"]
+    return (x + width // 2, y + height // 2)
+
+
+def is_actionable(node, window=None):
+    """Whether a node can be clicked at its center right now.
+
+    A node is only worth clicking when it reports a click handler, is visible
+    and enabled, has a non-empty rect, and — when a window is given — has its
+    center inside the window.
+    """
+    if not (node.get("clickable") and node.get("visible") and node.get("enabled")):
+        return False
+    rect = node.get("rect")
+    if not rect or rect[2] <= 0 or rect[3] <= 0:
+        return False
+    if window is not None:
+        x, y = node_center(node)
+        if not (0 <= x < window["width"] and 0 <= y < window["height"]):
+            return False
+    return True
+
+
+def actionable_nodes(state):
+    """Every node in a get_state() response that can be clicked."""
+    window = state.get("window")
+    return [
+        node for node in walk_tree(state["tree"]) if is_actionable(node, window)
+    ]

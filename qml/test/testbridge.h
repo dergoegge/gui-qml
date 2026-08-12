@@ -7,6 +7,7 @@
 
 #include <QByteArray>
 #include <QHash>
+#include <QJsonObject>
 #include <QJsonValue>
 #include <QList>
 #include <QLocalServer>
@@ -17,6 +18,8 @@
 #include <QString>
 
 #include <vector>
+
+class QQuickWindow;
 
 /// Exposes QML object tree to external test scripts over a Unix domain socket.
 /// Enabled only when compiled with ENABLE_TEST_AUTOMATION and launched with
@@ -43,6 +46,15 @@
 ///   {"cmd": "list_objects"}
 ///   {"cmd": "close_window"}
 ///   {"cmd": "set_clipboard_text", "text": "<value>"}
+///
+/// Commands for coordinate-driven exploration, where the driver reads the
+/// whole tree and acts on positions rather than on known objectNames:
+///   {"cmd": "get_state", "sinceSeq": <diagnostic-seq>, "maxNodes": <int>, "props": <bool>, "ignore": ["<objectName>"]}
+///   {"cmd": "click", "point": {"x": <int>, "y": <int>}, "button": "left"|"right"}
+///   {"cmd": "press_key", "key": <Qt::Key>, "modifiers": <int>, "text": "<value>", "count": <int>}
+///   {"cmd": "scroll", "point": {"x": <int>, "y": <int>}, "dx": <int>, "dy": <int>}
+///   {"cmd": "drag", "from": {"x": <int>, "y": <int>}, "to": {"x": <int>, "y": <int>}, "steps": <int>, "delayMs": <int>}
+///   {"cmd": "settle", "timeoutMs": <int>, "stableMs": <int>, "ignore": ["<objectName>"]}
 class TestBridge : public QObject
 {
     Q_OBJECT
@@ -67,6 +79,10 @@ private:
 
     /// Find a QObject by objectName, searching the entire QML tree.
     QObject* findObjectByName(const QString& name) const;
+    /// The application's main window, or nullptr before it exists.
+    QQuickWindow* mainWindow() const;
+    /// objectName (or class name) of the current page, empty when unknown.
+    QString currentPageName() const;
     QObject* findNamedObjectInSubtree(QObject* root, const QString& name) const;
     QObject* findListItem(QObject* view_obj, int row) const;
     QObject* resolveCurrentLeafItem(QObject* item) const;
@@ -99,6 +115,12 @@ private:
     QByteArray cmdListObjects();
     QByteArray cmdCloseWindow();
     QByteArray cmdSetClipboardText(const QString& text);
+    QByteArray cmdGetState(const QJsonObject& request);
+    QByteArray cmdClickPoint(const QJsonObject& request);
+    QByteArray cmdPressKey(const QJsonObject& request);
+    QByteArray cmdScroll(const QJsonObject& request);
+    QByteArray cmdDrag(const QJsonObject& request);
+    QByteArray cmdSettle(const QJsonObject& request);
 
     /// Build a JSON error response.
     static QByteArray errorResponse(const QString& message);
