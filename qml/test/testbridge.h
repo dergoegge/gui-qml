@@ -92,7 +92,7 @@ private:
 
     /// Process a single JSON command and return the JSON response.
     QByteArray processCommand(const QByteArray& json_cmd);
-    void processClientCommands(QLocalSocket* client);
+    void processClientCommands(QLocalSocket* raw_client);
 
     /// Dispatch individual command handlers.
     QByteArray cmdGetCurrentPage();

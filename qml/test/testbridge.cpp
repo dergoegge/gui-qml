@@ -250,25 +250,35 @@ void TestBridge::handleClientData()
     } while (m_pending_client_data);
 }
 
-void TestBridge::processClientCommands(QLocalSocket* client)
+void TestBridge::processClientCommands(QLocalSocket* raw_client)
 {
+    // The client is held as a QPointer, and its buffer looked up afresh each
+    // time round, because commands run the event loop: settle and
+    // wait_for_page do it to let the interface change, type_text does it after
+    // taking focus. A client that disconnects inside one of those reaches
+    // handleClientDisconnected re-entrantly, which erases the socket, drops its
+    // read buffer and deletes the socket -- so a raw pointer or a reference
+    // into m_read_buffers held across a command dangles from that point on.
+    QPointer<QLocalSocket> client{raw_client};
     if (!client) return;
 
-    QByteArray& read_buffer = m_read_buffers[client];
     if (client->bytesAvailable() > 0) {
-        read_buffer.append(client->readAll());
+        m_read_buffers[client].append(client->readAll());
     }
 
     // Process newline-delimited JSON commands.
-    int newline_pos;
-    while ((newline_pos = read_buffer.indexOf('\n')) != -1) {
+    while (client) {
+        QByteArray& read_buffer = m_read_buffers[client];
+        const int newline_pos = read_buffer.indexOf('\n');
+        if (newline_pos == -1) return;
+
         QByteArray line = read_buffer.left(newline_pos);
         read_buffer.remove(0, newline_pos + 1);
 
         if (line.trimmed().isEmpty()) continue;
 
         QByteArray response = processCommand(line);
-        if (client->state() != QLocalSocket::ConnectedState) {
+        if (!client || client->state() != QLocalSocket::ConnectedState) {
             return;
         }
         response.append('\n');
