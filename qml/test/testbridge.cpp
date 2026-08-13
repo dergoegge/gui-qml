@@ -22,6 +22,7 @@
 #include <QKeyEvent>
 #include <QImage>
 #include <QPointer>
+#include <QtTest/QTest>
 #include <QQuickItem>
 #include <QQuickWindow>
 #include <QRectF>
@@ -37,6 +38,21 @@
 #include <utility>
 
 namespace {
+/// Click at a point in the window, the way the platform would.
+///
+/// Posting a QMouseEvent pair at the window looks equivalent and is not: the
+/// events carry no pointing device, no timestamps and no press state, and Qt 6
+/// delivers them through QQuickDeliveryAgent, which tracks all three. Controls
+/// then take focus without ever activating -- 790 synthetic clicks across three
+/// runs moved this application's interface not at all, while the same clicks
+/// made by hand navigated it. QTest routes through QWindowSystemInterface, the
+/// path a real click takes, and is what Qt's own tests use.
+void ClickWindowAt(QQuickWindow* window, const QPoint& pos, Qt::MouseButton button)
+{
+    QTest::mouseClick(window, button, Qt::NoModifier, pos);
+    QCoreApplication::processEvents();
+}
+
 QByteArray okResponse()
 {
     QJsonObject resp;
@@ -88,14 +104,7 @@ QByteArray clickObject(QObject* obj)
                 QPointF(item->width() / 2.0, item->height() / 2.0));
             const QPoint pos = center.toPoint();
 
-            QMouseEvent press(QEvent::MouseButtonPress, pos, window->mapToGlobal(pos),
-                              Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
-            QMouseEvent release(QEvent::MouseButtonRelease, pos, window->mapToGlobal(pos),
-                                Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
-
-            QCoreApplication::sendEvent(window, &press);
-            QCoreApplication::sendEvent(window, &release);
-            QCoreApplication::processEvents();
+            ClickWindowAt(window, pos, Qt::LeftButton);
 
             if (clicked_connection) {
                 const bool clicked_emitted{!clicked_timer.isActive()};
@@ -1396,13 +1405,7 @@ QByteArray TestBridge::cmdClickPoint(const QJsonObject& request)
     const Qt::MouseButton button = ButtonFromJson(request.value(QStringLiteral("button")).toString());
     const QPoint pos = point.toPoint();
 
-    QMouseEvent press(QEvent::MouseButtonPress, pos, window->mapToGlobal(pos),
-                      button, button, Qt::NoModifier);
-    QMouseEvent release(QEvent::MouseButtonRelease, pos, window->mapToGlobal(pos),
-                        button, Qt::NoButton, Qt::NoModifier);
-    QCoreApplication::sendEvent(window, &press);
-    QCoreApplication::sendEvent(window, &release);
-    QCoreApplication::processEvents();
+    ClickWindowAt(window, pos, button);
 
     QJsonObject resp;
     resp[QStringLiteral("ok")] = true;

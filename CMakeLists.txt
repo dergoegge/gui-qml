@@ -26,13 +26,18 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/lib)
 list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake/module)
 
 # Qt dependencies QML
+option(ENABLE_TEST_AUTOMATION "Enable test automation bridge for QML UI testing" OFF)
+
 set(qt_components Core Gui LinguistTools Widgets Network Qml Quick QuickControls2)
+if(ENABLE_TEST_AUTOMATION)
+  # The test bridge synthesises input through QTest, which delivers it the way
+  # the platform would rather than by posting events at the window.
+  list(APPEND qt_components Test)
+endif()
 find_package(Qt 6.2 MODULE REQUIRED
     COMPONENTS ${qt_components}
 )
 find_package(QRencode MODULE REQUIRED)
-
-option(ENABLE_TEST_AUTOMATION "Enable test automation bridge for QML UI testing" OFF)
 
 # Do not build any executable targets from bitcoin submodule
 set(BUILD_BENCH OFF)
@@ -105,6 +110,7 @@ target_compile_definitions(bitcoinqml
 )
 if(ENABLE_TEST_AUTOMATION)
   target_compile_definitions(bitcoinqml PUBLIC ENABLE_TEST_AUTOMATION)
+  target_link_libraries(bitcoinqml PUBLIC Qt6::Test)
 endif()
 target_include_directories(bitcoinqml
   PRIVATE
