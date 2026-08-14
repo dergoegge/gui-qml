@@ -68,6 +68,10 @@ QByteArray clickObject(QObject* obj)
         return QJsonDocument(resp).toJson(QJsonDocument::Compact);
     }
 
+    // Anything that clicks below can destroy the object it clicked, and `meta`
+    // points into it, so neither may be touched once this goes null.
+    QPointer<QObject> alive{obj};
+
     // Preferred path: AbstractButton::click() runs the full press/release/
     // clicked pipeline synchronously and toggles `checked` when checkable.
     // Available on QQuickAbstractButton from Qt 6.8+ (Q_REVISION(6, 8)).
@@ -106,14 +110,16 @@ QByteArray clickObject(QObject* obj)
 
             ClickWindowAt(window, pos, Qt::LeftButton);
 
+            bool clicked_emitted{false};
             if (clicked_connection) {
-                const bool clicked_emitted{!clicked_timer.isActive()};
+                clicked_emitted = !clicked_timer.isActive();
                 QObject::disconnect(clicked_connection);
                 clicked_timer.stop();
-                if (clicked_emitted) return okResponse();
-            } else {
-                return okResponse();
             }
+            // An object the click destroyed was clicked, and the fallbacks
+            // below would read it after the fact.
+            if (!alive) return okResponse();
+            if (!clicked_connection || clicked_emitted) return okResponse();
         }
     }
 
@@ -142,6 +148,7 @@ QByteArray clickObject(QObject* obj)
         if (int idx = meta->indexOfMethod("toggle()"); idx >= 0) {
             toggled_checked = meta->method(idx).invoke(obj, Qt::DirectConnection);
             invoked_any |= toggled_checked;
+            if (!alive) return okResponse();
         }
 
         if (toggled_connection) {
@@ -1400,8 +1407,15 @@ QByteArray TestBridge::cmdClickPoint(const QJsonObject& request)
                                  .arg(point.y()));
     }
 
-    // Resolve the target before clicking: the click may destroy it.
-    QObject* hit = TestTree::HitTest(m_engine, point);
+    // Describe the target before clicking, not after. The click destroys it
+    // often enough -- a popup closing takes its contents with it, a list
+    // recycles the delegate that was hit -- and the description is of what was
+    // clicked either way.
+    QJsonObject hit;
+    if (QObject* target = TestTree::HitTest(m_engine, point)) {
+        hit = DescribeObject(target);
+    }
+
     const Qt::MouseButton button = ButtonFromJson(request.value(QStringLiteral("button")).toString());
     const QPoint pos = point.toPoint();
 
@@ -1409,7 +1423,7 @@ QByteArray TestBridge::cmdClickPoint(const QJsonObject& request)
 
     QJsonObject resp;
     resp[QStringLiteral("ok")] = true;
-    if (hit) resp[QStringLiteral("hit")] = DescribeObject(hit);
+    if (!hit.isEmpty()) resp[QStringLiteral("hit")] = hit;
     return QJsonDocument(resp).toJson(QJsonDocument::Compact);
 }
 
