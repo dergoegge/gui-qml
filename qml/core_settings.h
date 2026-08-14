@@ -98,7 +98,7 @@ bool CanEditCoreSetting(ArgsManager& args, const QString& name);
 
 common::SettingsValue GuiOverrideValue(ArgsManager& args, const QString& name, const common::SettingsValue& value);
 void SetRwSetting(ArgsManager& args, const QString& name, const common::SettingsValue& value);
-void UpdateRwSetting(interfaces::Node& node, const QString& name, const common::SettingsValue& value);
+void UpdateRwSetting(interfaces::Node& node, ArgsManager& args, const QString& name, const common::SettingsValue& value);
 bool WriteCoreSettingOverride(ArgsManager& args, const QString& name, const common::SettingsValue& value);
 bool WriteProxySetting(ArgsManager& args, const QString& key, bool enabled, const QString& address);
 

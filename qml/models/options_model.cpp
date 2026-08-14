@@ -282,7 +282,7 @@ bool OptionsQmlModel::canEditCoreSetting(const QString& name) const
 bool OptionsQmlModel::writeCoreSettingOverride(const QString& name, const common::SettingsValue& value)
 {
     if (!canEditCoreSetting(name)) return false;
-    QmlCoreSettings::UpdateRwSetting(m_node, name, QmlCoreSettings::GuiOverrideValue(m_args, name, value));
+    QmlCoreSettings::UpdateRwSetting(m_node, m_args, name, QmlCoreSettings::GuiOverrideValue(m_args, name, value));
     refreshCoreSettingStatuses();
     return true;
 }

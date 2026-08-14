@@ -612,8 +612,21 @@ void SetRwSetting(ArgsManager& args, const QString& name, const common::Settings
     });
 }
 
-void UpdateRwSetting(interfaces::Node& node, const QString& name, const common::SettingsValue& value)
+void UpdateRwSetting(interfaces::Node& node, ArgsManager& args, const QString& name, const common::SettingsValue& value)
 {
+    // With -nosettings there is no settings file to update, and
+    // ArgsManager::WriteSettingsFile() -- which Node::updateRwSetting() calls
+    // unconditionally -- throws std::logic_error rather than reporting that.
+    // Nothing between here and the switch the user just flipped catches it, so
+    // handing the value to the node terminates the application.
+    //
+    // Apply the change in memory instead: it holds for the lifetime of this
+    // process, which is as long as anything can hold when there is nowhere to
+    // write it.
+    if (!args.GetSettingsPath()) {
+        SetRwSetting(args, name, value);
+        return;
+    }
     node.updateRwSetting(name.toStdString(), LegacyCompatibleRwSettingValue(name, value));
 }
 
@@ -942,29 +955,29 @@ bool Session::writeToNode(interfaces::Node& node, ArgsManager& args, const QStri
 
         const QString prev_key{name + QStringLiteral("-prev")};
         if (enabled) {
-            UpdateRwSetting(node, name, GuiOverrideValue(args, name, ProxySetting(true, trimmed)));
-            UpdateRwSetting(node, prev_key, common::SettingsValue{});
+            UpdateRwSetting(node, args, name, GuiOverrideValue(args, name, ProxySetting(true, trimmed)));
+            UpdateRwSetting(node, args, prev_key, common::SettingsValue{});
         } else {
             if (!trimmed.isEmpty()) {
-                UpdateRwSetting(node, prev_key, common::SettingsValue{trimmed.toStdString()});
+                UpdateRwSetting(node, args, prev_key, common::SettingsValue{trimmed.toStdString()});
             }
-            UpdateRwSetting(node, name, GuiOverrideValue(args, name, ProxySetting(false, trimmed)));
+            UpdateRwSetting(node, args, name, GuiOverrideValue(args, name, ProxySetting(false, trimmed)));
         }
         return true;
     }
 
     if (name == QStringLiteral("prune")) {
         if (m_values.prune) {
-            UpdateRwSetting(node, name, GuiOverrideValue(args, name, PruneSetting(true, m_values.prune_size_gb)));
-            UpdateRwSetting(node, QStringLiteral("prune-prev"), common::SettingsValue{});
+            UpdateRwSetting(node, args, name, GuiOverrideValue(args, name, PruneSetting(true, m_values.prune_size_gb)));
+            UpdateRwSetting(node, args, QStringLiteral("prune-prev"), common::SettingsValue{});
         } else {
-            UpdateRwSetting(node, QStringLiteral("prune-prev"), PruneSetting(true, m_values.prune_size_gb));
-            UpdateRwSetting(node, name, GuiOverrideValue(args, name, PruneSetting(false, m_values.prune_size_gb)));
+            UpdateRwSetting(node, args, QStringLiteral("prune-prev"), PruneSetting(true, m_values.prune_size_gb));
+            UpdateRwSetting(node, args, name, GuiOverrideValue(args, name, PruneSetting(false, m_values.prune_size_gb)));
         }
         return true;
     }
 
-    UpdateRwSetting(node, name, GuiOverrideValue(args, name, settingValue(name)));
+    UpdateRwSetting(node, args, name, GuiOverrideValue(args, name, settingValue(name)));
     return true;
 }
 
